@@ -23,7 +23,13 @@ def preprocess_audio(audio_path):
     S = librosa.feature.melspectrogram(y=y, sr=44100, n_mels=128, fmax=8000)
     # Convert to dB
     S_dB = librosa.power_to_db(S, ref=np.max)
+    
     return S_dB
+
+def pad_spectrogram(spectrogram, key, max_length=313):
+    padding_length = max_length - tf.shape(spectrogram)[0]
+    padded_spectrogram = tf.pad(spectrogram, [[0, padding_length], [0, 0]])
+    return padded_spectrogram, key
 
 def retrieve_data(split='train'):
     data = load_dataset("amaai-lab/MusicBench", split=split)
@@ -39,19 +45,36 @@ def retrieve_data(split='train'):
 
             yield spectrogram, key_label
 
-def make_dataset(split='train', batch_size=32):
+def setup_gpu():
+    gpus = tf.config.list_physical_devices('GPU')
+    print("GPU available:", gpus)
+
+    # If GPUs are available, set TensorFlow to use the first GPU
+    if gpus:
+        try:
+            tf.config.experimental.set_memory_growth(gpus[0], True)
+            tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
+            logical_gpus = tf.config.experimental.list_logical_devices('GPU')
+            print(len(gpus), "Physical GPU(s),", len(logical_gpus), "Logical GPU(s)")
+        except RuntimeError as e:
+            print(e)
+
+
+def make_dataset(split='train', batch_size=32, max_length=313, cache_file='cache'):    
+    setup_gpu()
     # Create a generator
     generator = lambda: retrieve_data(split)
     # Define the output types and shapes of the dataset
     output_signature = (
         tf.TensorSpec(shape=(128, None), dtype=tf.float32),  # Adjust the shape based on the actual output of preprocess_audio
         tf.TensorSpec(shape=(), dtype=tf.int32)  # Change dtype if keys are integer labels
-    )
-
+    )   
     dataset = tf.data.Dataset.from_generator(generator, output_signature=output_signature)
-    # dataset = dataset.batch(batch_size)
-    # dataset = dataset.shuffle(buffer_size=1000)
-    # dataset = dataset.prefetch(buffer_size=tf.data.AUTOTUNE)
+    dataset = dataset.map(lambda spectrogram, key: pad_spectrogram(spectrogram, key, max_length), num_parallel_calls=tf.data.AUTOTUNE)
+    dataset = dataset.batch(batch_size)
+    # dataset = dataset.shuffle(buffer_size=250)
+    # dataset = dataset.cache(cache_file)
+    dataset = dataset.prefetch(buffer_size=tf.data.AUTOTUNE)
 
     # Create a Dataset from the generator
     return dataset
